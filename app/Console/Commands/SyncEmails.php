@@ -85,7 +85,7 @@ class SyncEmails extends Command
                     'subject'    => $message->getSubject() ?? 'No Subject',
                     'from_email' => $senderEmail,
                     'from_name'  => $message->getFrom()[0]->personal,
-                    'body'       => $message->getTextBody() ?? 'No Text Content',
+                    'body' => $message->getHTMLBody() ?: $message->getTextBody(),
                     'message_id' => $message->getMessageId(),
                     'created_at' => Carbon::parse($message->getDate()), 
                     'updated_at' => now(),

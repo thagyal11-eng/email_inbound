@@ -22,4 +22,39 @@ class Email extends Model
     {
         return $this->belongsTo(Email::class, 'parent_id');
     }
+
+    // --- NEW MAGIC FUNCTION ---
+    // This separates the "Real Message" from the "Quoted History"
+    public function getCleanBodyAttribute()
+    {
+        // 1. Array of common "Reply Headers" used by Gmail, Outlook, Apple Mail
+        $patterns = [
+            '/On\s+\w{3},\s+\w{3}\s+\d{1,2},\s+\d{4}\s+at\s+.*wrote:/is', // Gmail style
+            '/On\s+.*wrote:/is', // Generic style
+            '/From:\s+.*Sent:\s+.*To:\s+.*Subject:/is', // Outlook style
+            '/-{3,}\s+Original Message\s+-{3,}/is', // Generic separators
+            '/_{3,}/' // Underscore separators
+        ];
+
+        $body = $this->body;
+
+        foreach ($patterns as $pattern) {
+            // Split the body into two parts: [0] = New Message, [1] = History
+            $parts = preg_split($pattern, $body, 2);
+            
+            if (count($parts) > 1) {
+                // We found a match! Return only the new part.
+                return trim($parts[0]);
+            }
+        }
+
+        // If no history found, return the whole body
+        return trim($body);
+    }
+
+    // Helper to check if there IS hidden history
+    public function hasHistory()
+    {
+        return trim($this->clean_body) !== trim($this->body);
+    }
 }
