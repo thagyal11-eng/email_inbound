@@ -5,69 +5,94 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use Webklex\IMAP\Facades\Client;
 use Illuminate\Support\Facades\DB;
+use Carbon\Carbon;
 
 class SyncEmails extends Command
 {
     protected $signature = 'email:sync';
-    protected $description = 'Connect to Gmail and save emails from specific senders';
+    protected $description = 'Sync Inbox AND Sent items (to catch phone replies)';
 
     public function handle()
     {
-        $this->info('Connecting to Gmail...');
-
-        // 1. Define your allowed senders here
+        // 1. We MUST include YOUR email here now, 
+        // otherwise the script will ignore your phone replies.
         $allowedSenders = [
             'thagyal11@gmail.com',
             'sunilthagyal60@gmail.com',
-            'sahil@gmail.com'
+            'sahil@gmail.com',
+            'sunilkumar.mind2web@gmail.com', // <--- ADDED BACK
+            'jailal.mind2web@gmail.com'
         ];
 
-        try {
-            $client = Client::account('default');
-            $client->connect();
+        // 2. Scan both locations
+        $folders = ['INBOX', '[Gmail]/Sent Mail']; 
 
-            $folder = $client->getFolder('INBOX');
-            $this->info('Connected to INBOX.');
+        $client = Client::account('default');
+        $client->connect();
 
-            $since = now()->subDay()->format('d-M-Y'); 
-            $this->info("Fetching all emails since: $since ...");
+        foreach($folders as $folderName) {
+            try {
+                $folder = $client->getFolder($folderName);
+                $this->info("---------------------------------");
+                $this->info("📂 Scanning: $folderName");
+            } catch (\Exception $e) {
+                continue;
+            }
 
-            // 2. Fetch ALL emails from yesterday (broad search)
-            // We do NOT filter by 'from' here, we filter in the loop below.
+            $since = now()->subDay()->format('d-M-Y');
             $messages = $folder->query()->since($since)->get();
-            $this->info("Scanning " . $messages->count() . " recent emails...");
 
             foreach ($messages as $message) {
                 $senderEmail = $message->getFrom()[0]->mail;
 
-                // 3. PHP FILTER: strictly check if sender is in our allowed list
+                // Filter: Is this sender allowed?
                 if (!in_array($senderEmail, $allowedSenders)) {
-                    // If not in the list, skip silently
                     continue; 
                 }
 
-                // Check if already saved
+                // DUPLICATE CHECK (Critical):
+                // If we sent this from the Website, it's already in the DB.
+                // This check ensures we don't save it twice.
                 if (DB::table('emails')->where('message_id', $message->getMessageId())->exists()) {
-                    $this->comment("Skipped (Existing): " . $message->getSubject());
+                    // $this->comment("Skipped duplicate: " . $message->getSubject());
                     continue;
                 }
 
-                // Save to DB
+                // --- THREADING LOGIC ---
+                $inReplyToId = $message->getInReplyTo();
+                if (is_array($inReplyToId)) $inReplyToId = $inReplyToId[0] ?? null;
+
+                $parentId = null;
+                if ($inReplyToId) {
+                    $parentEmail = DB::table('emails')->where('message_id', $inReplyToId)->first();
+                    if ($parentEmail) {
+                        $parentId = $parentEmail->id;
+                        $this->info("   🔗 Linked reply to: " . $parentEmail->subject);
+                    }
+                }
+
+                // Determine Type: If it's in Sent Mail, it's outgoing.
+                $type = (strpos($folderName, 'Sent') !== false) ? 'outgoing' : 'incoming';
+
+                // Double check: If the sender is ME, force type to outgoing
+                if ($senderEmail == 'sunilkumar.mind2web@gmail.com') {
+                    $type = 'outgoing';
+                }
+
                 DB::table('emails')->insert([
+                    'parent_id'  => $parentId,
+                    'type'       => $type,
                     'subject'    => $message->getSubject() ?? 'No Subject',
                     'from_email' => $senderEmail,
                     'from_name'  => $message->getFrom()[0]->personal,
                     'body'       => $message->getTextBody() ?? 'No Text Content',
                     'message_id' => $message->getMessageId(),
-                    'created_at' => now(),
+                    'created_at' => Carbon::parse($message->getDate()), 
                     'updated_at' => now(),
                 ]);
-                
-                $this->info("Imported: " . $message->getSubject() . " (From: $senderEmail)");
-            }
 
-        } catch (\Exception $e) {
-            $this->error("Error: " . $e->getMessage());
+                $this->info("Saved ($type): " . $message->getSubject());
+            }
         }
     }
 }
